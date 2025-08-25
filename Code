@@ -1,0 +1,125 @@
+# RBF KERNEL with Deep + HOG Features + Kernel PCA to 700
+import os
+import numpy as np
+import cv2
+from skimage.feature import hog
+from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+from tensorflow.keras.preprocessing.image import img_to_array
+from sklearn.decomposition import KernelPCA
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, confusion_matrix, roc_curve
+import warnings
+warnings.filterwarnings("ignore")
+
+# Load InceptionV3 model
+model = InceptionV3(weights='imagenet', include_top=False, pooling='avg')
+
+def preprocess_image(image_path):
+    image = cv2.imread(image_path)
+    image = cv2.resize(image, (299, 299))
+    image = img_to_array(image)
+    image = np.expand_dims(image, axis=0)
+    return preprocess_input(image)
+
+def extract_hog_features(image_path):
+    gray = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    gray = cv2.resize(gray, (128, 64))  # Typical HOG input
+    hog_features = hog(
+        gray,
+        orientations=9,
+        pixels_per_cell=(8, 8),
+        cells_per_block=(2, 2),
+        block_norm='L2-Hys',
+        transform_sqrt=True,
+        feature_vector=True
+    )
+    return hog_features
+
+def extract_features_and_train(dataset_path):
+    features, labels = [], []
+    count = 0
+
+    for root, _, files in os.walk(dataset_path):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.tif')):
+                path = os.path.join(root, file)
+                try:
+                    label_folder = os.path.basename(os.path.dirname(path)).lower()
+                    label = 1 if 'genuine' in label_folder or 'original' in label_folder else 0
+
+                    # Deep feature
+                    deep_img = preprocess_image(path)
+                    deep_feature = model.predict(deep_img, verbose=0).flatten()
+
+                    # HOG feature
+                    hog_feature = extract_hog_features(path)
+
+                    # Combine features
+                    combined_feature = np.concatenate((deep_feature, hog_feature))
+
+                    features.append(combined_feature)
+                    labels.append(label)
+                    count += 1
+                except Exception as e:
+                    print(f"Error: {path} - {e}")
+
+    features = np.array(features)
+    labels = np.array(labels)
+    print(f"\nTotal number of images processed: {count}")
+    print(f"Original feature shape (deep + HOG): {features.shape}")
+
+    # Kernel PCA to reduce to 700 features
+    if features.shape[0] < 700:
+        raise ValueError(f"Cannot reduce to 700 dimensions: number of samples = {features.shape[0]}")
+
+    print("Reducing dimensionality using Kernel PCA to 700 features...")
+    kpca = KernelPCA(n_components=700, kernel='rbf', gamma=1e-4)
+    features_reduced = kpca.fit_transform(features)
+    print(f"Reduced feature shape after Kernel PCA: {features_reduced.shape}")
+
+    # Train-test split (90% train, 10% test)
+    X_train, X_test, y_train, y_test = train_test_split(
+        features_reduced, labels, test_size=0.1, random_state=42, stratify=labels
+    )
+
+    # SVM with RBF kernel
+    svm = SVC(kernel='rbf', probability=True)
+    svm.fit(X_train, y_train)
+    y_pred = svm.predict(X_test)
+    y_prob = svm.predict_proba(X_test)[:, 1]
+
+    # Accuracy
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"\nAccuracy: {accuracy * 100:.2f}%")
+
+    # ===== Correct FAR / FRR / AER (in percentages) =====
+    # Ensure the confusion matrix uses explicit label ordering: 0 = forged/impostor, 1 = genuine
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+
+    # FAR: fraction of impostor (forged, label=0) samples incorrectly accepted as genuine
+    far_pct = (fp / (fp + tn) * 100) if (fp + tn) > 0 else 0.0
+
+    # FRR: fraction of genuine (label=1) samples incorrectly rejected as forged
+    frr_pct = (fn / (fn + tp) * 100) if (fn + tp) > 0 else 0.0
+
+    # AER: average of FAR and FRR (in percentage terms)
+    aer_pct = (far_pct + frr_pct) / 2.0
+
+    print(f"False Acceptance Rate (FAR): {far_pct:.2f}%")
+    print(f"False Rejection Rate (FRR): {frr_pct:.2f}%")
+    print(f"Average Error Rate (AER): {aer_pct:.2f}%")
+    # ====================================================
+
+    # EER
+    fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+    fnr = 1 - tpr
+    eer_index = np.nanargmin(np.abs(fpr - fnr))
+    eer_threshold = thresholds[eer_index]
+    eer = fpr[eer_index]
+    print(f"Equal Error Rate (EER): {eer:.4f}")
+
+# Example usage
+dataset_path = r"/content/drive/MyDrive/299x299"
+extract_features_and_train(dataset_path)
