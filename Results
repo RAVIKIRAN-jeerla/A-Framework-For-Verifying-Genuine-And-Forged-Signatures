@@ -1,0 +1,9 @@
+Total number of images processed: 2640
+Original feature shape (deep + HOG): (2640, 5828)
+Reducing dimensionality using Kernel PCA to 700 features...
+Reduced feature shape after Kernel PCA: (2640, 700)
+
+Accuracy: 95.45%
+False Acceptance Rate (FAR): 5.30%
+False Rejection Rate (FRR): 3.79%
+Average Error Rate (AER): 4.55%
